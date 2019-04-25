@@ -1,0 +1,126 @@
+---
+title: "Example of RescueNet For Forecasting"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+Load libraries.
+
+Put the connection string into the odbcConnect or on windows you can set up
+an odbc connection in the odbc manager and just put the connection name below.
+
+```{r}
+library(tidyverse)
+library(magrittr)
+library(lubridate)
+library(RODBC)
+library(prophet)
+cn <- odbcConnect("YOUR DATABASE HERE")
+```
+
+Read in data from DB
+```{r}
+dailyCallVolume <- sqlQuery(cn, "SELECT tdate, count(*) as Incidents
+                                FROM RescueNet.Trips
+                                GROUP BY tdate")
+```
+
+Graph the daily volumes since 2012 until today:
+```{r}
+dailyCallVolume %>%
+  filter(year(ymd(tdate)) >= 201e & ymd(tdate) < Sys.Date()) %>%
+  ggplot(aes(x = ymd(tdate), y = Incidents)) +
+  geom_line() + 
+  ylab("Daily Incidents") +
+  xlab("Day") + 
+  ggtitle("Daily Incidents")
+
+```
+
+Create a dataset for prophet then fit a basic model with US holidays
+
+```{r}
+prophet_volume <- dailyCallVolume %>%
+  filter(year(ymd(tdate)) >= 2012 & ymd(tdate) < Sys.Date()) %>%
+  select(ds = tdate, y = Incidents)     #Need this because prophet requires 
+                                        #date to be 'ds' and forecast to be 'y'
+
+m <- prophet()
+m <- add_country_holidays(m, country_name = 'US')
+m <- fit.prophet(m, prophet_volume)
+
+```
+
+
+Make predictions
+```{r}
+future <- make_future_dataframe(m, periods = 365)
+forecast <- predict(m, future)
+```
+```{r}
+plot(m, forecast)
+```
+
+Create a dataset with data since 2017.
+Get just the upper and lower bounds of the model (and expected value), join with actual values.
+```{r}
+actual_volumes  <- dailyCallVolume %>%
+  filter(year(ymd(tdate)) >= 2017 & ymd(tdate) < Sys.Date()) %>%
+  select(ds = tdate, y = Incidents)
+
+actual_volumes$ds %<>%ymd()
+
+forecast_small <- forecast %>%
+  select(ds, yhat, yhat_lower, yhat_upper)
+forecast_small$ds %<>% ymd()
+
+forcast_actual <- left_join(forecast_small, actual_volumes, by = 'ds')
+```
+
+Plot actual values compared with expectations from model:
+```{r}
+forcast_actual %>%
+  filter(ds > '2018-10-01' & ds < '2018-11-01') %>%
+  ggplot(aes(x = ds)) +
+  geom_ribbon(aes(y = yhat, ymin = yhat_lower, ymax = yhat_upper)) + 
+  geom_point( aes(y=y), color = "red", size = 3) +
+  geom_line( aes(y=y), color = "red", alpha = 0.5) +
+  ylab("Incidents Per Day") +
+  xlab("") + 
+  ggtitle("Forecasted Incidents vs Actual Incidents")
+```
+
+```{r}
+forcast_actual %>%
+  filter(ds > '2018-12-18' & ds < '2019-01-23') %>%
+  ggplot(aes(x = ds)) +
+  geom_ribbon(aes(y = yhat, ymin = yhat_lower, ymax = yhat_upper)) + 
+  geom_point( aes(y=y), color = "red", size = 3) +
+  geom_line( aes(y=y), color = "red", alpha = 0.5) +
+  ylab("Incidents Per Day") +
+  xlab("Day") + 
+  ggtitle("Forecasted Incidents vs Actual Incidents", subtitle =  "Including Holidays")
+```
+
+Plot the decomposition graph:
+```{r}
+prophet_plot_components(m, forecast)
+```
+
+
+Looking to the future:
+```{r}
+forcast_actual %>%
+  filter(ds > '2019-04-05' & ds < '2019-05-01' & ds != Sys.Date()-1) %>% #excluding data from yesterday                                                                              becasuse it's not all available                                                                            at the time I'm running this
+  ggplot(aes(x = ds)) +
+  geom_ribbon(aes(y = yhat, ymin = yhat_lower, ymax = yhat_upper)) + 
+  geom_point( aes(y=y), color = "red", size = 3) +
+  geom_line( aes(y=y), color = "red", alpha = 0.5) +
+  ylab("Incidents Per Day") +
+  xlab("") + 
+  ggtitle("Predicting the Future")
+```
+
+
+
